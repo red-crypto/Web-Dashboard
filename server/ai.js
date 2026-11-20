@@ -5,22 +5,25 @@ const db = require('./db');
 const time = require('./time');
 
 const API_KEY = () => process.env.OPENAI_API_KEY || '';
-const MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+const DEFAULT_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+// 설정 화면에서 고른 모델이 있으면 그것을, 없으면 .env 의 OPENAI_MODEL, 그것도 없으면 기본값
+const model = () => db.getSetting('ai_model') || DEFAULT_MODEL;
 const BASE_URL = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, '');
 
 class AiError extends Error {}
 
 // ---------- 화면에서 고른 "참고 범위"를 텍스트 컨텍스트로 ----------
+// 고른 범위의 데이터만 GPT에 보낸다. (예: '현재 프로젝트'를 고르면 다른 프로젝트 정보는 보내지 않음)
 function fmtTodo(t) {
   const bits = [`#${t.id} ${t.title}`];
   if (t.due_date) bits.push(`마감 ${t.due_date}`); else bits.push('마감 없음');
-  if (t.project_name) bits.push(`프로젝트: ${t.project_name}`);
+  if (t.project_name) bits.push(`프로젝트: ${t.project_name} (id ${t.project_id})`);
   if (t.done) bits.push('완료');
   return '- ' + bits.join(' | ');
 }
 function fmtEvent(e) {
   const when = e.start_time ? `${e.date} ${e.start_time}${e.end_time ? '~' + e.end_time : ''}` : `${e.date} (종일)`;
-  return `- ${when} ${e.title}${e.project_name ? ' | 프로젝트: ' + e.project_name : ''}`;
+  return `- ${when} ${e.title}${e.project_name ? ` | 프로젝트: ${e.project_name} (id ${e.project_id})` : ''}`;
 }
 const list = (rows, f, empty = '- (없음)') => (rows.length ? rows.map(f).join('\n') : empty);
 
@@ -29,19 +32,16 @@ function resolveScope(scope) {
   if (type === 'project') {
     const p = db.getProject(Number(scope.projectId));
     if (!p) throw new db.ValidationError('참고할 프로젝트를 찾을 수 없습니다.');
-    return { type, project: p, label: `프로젝트: ${p.name}` };
+    return { type, key: `project:${p.id}`, project: p, label: `프로젝트: ${p.name}` };
   }
-  if (type === 'all') return { type, label: '전체 데이터' };
-  return { type: 'today', label: '오늘 할 일' };
+  if (type === 'all') return { type, key: 'all', label: '전체 데이터' };
+  return { type: 'today', key: 'today', label: '오늘 할 일' };
 }
 
 function buildContext(scope) {
   const today = time.today();
   const lines = [];
   lines.push(`현재: ${today} (${time.WEEKDAY_KO[time.weekday(today)]}요일) ${time.nowTime()}, 시간대 ${time.TZ}`);
-  const projects = db.listProjects();
-  lines.push('\n[프로젝트 목록 (id: 이름 · 상태 · 완료/전체)]');
-  lines.push(list(projects, (p) => `- ${p.id}: ${p.name} · ${p.status} · ${p.completed}/${p.total}${p.due_date ? ' · 마감 ' + p.due_date : ''}`));
 
   if (scope.type === 'project') {
     const p = scope.project;
@@ -55,6 +55,8 @@ function buildContext(scope) {
     lines.push('\n[이 프로젝트의 다가오는 일정]');
     lines.push(list(p.events, fmtEvent));
   } else if (scope.type === 'all') {
+    lines.push('\n[프로젝트 목록 (id: 이름 · 상태 · 완료/전체)]');
+    lines.push(list(db.listProjects(), (p) => `- ${p.id}: ${p.name} · ${p.status} · ${p.completed}/${p.total}${p.due_date ? ' · 마감 ' + p.due_date : ''}`));
     lines.push('\n[미완료 할 일 전체]');
     lines.push(list(db.listTodos({ filter: 'today' }).concat(db.listTodos({ filter: 'upcoming' })).slice(0, 80), fmtTodo));
     lines.push('\n[30일 내 일정]');
@@ -175,7 +177,8 @@ async function callOpenAI(body) {
 }
 
 // 채팅 1회: 성공하면 대화에 저장하고 결과를 돌려준다. 실패하면 아무것도 저장하지 않는다.
-async function chat({ conversationId, message, scope }) {
+// includeHistory: 범위를 바꾼 뒤에도 이전 대화를 함께 보낼지 (기본: 보내지 않음)
+async function chat({ conversationId, message, scope, includeHistory = false }) {
   const text = typeof message === 'string' ? message.trim() : '';
   if (!text) throw new db.ValidationError('메시지를 입력하세요.');
   if (text.length > 4000) throw new db.ValidationError('메시지가 너무 깁니다.');
@@ -183,13 +186,16 @@ async function chat({ conversationId, message, scope }) {
   if (cid && !db.getConversation(cid)) throw new db.ValidationError('대화를 찾을 수 없습니다.');
 
   const sc = resolveScope(scope);
-  const history = cid
-    ? db.all('SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT 20', cid).reverse()
-    : [];
+  let history = [];
+  if (cid) {
+    history = includeHistory === true
+      ? db.all('SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT 20', cid).reverse()
+      : db.historyForScope(cid, sc.key, 20);
+  }
 
+  // temperature 등은 보내지 않는다 (일부 최신 모델은 기본값 외의 값을 거부함)
   const reply = await callOpenAI({
-    model: MODEL,
-    temperature: 0.3,
+    model: model(),
     tools: TOOLS,
     messages: [
       { role: 'system', content: `${SYSTEM_PROMPT}\n\n[참고 범위: ${sc.label}]\n[데이터]\n${buildContext(sc)}` },
@@ -202,7 +208,7 @@ async function chat({ conversationId, message, scope }) {
   let answer = (reply.content || '').trim();
   if (!answer) answer = proposals.length ? '아래 내용을 확인하고 [등록]을 눌러주세요.' : '(빈 응답)';
 
-  cid = db.saveExchange({ conversationId: cid, userText: text, scopeLabel: sc.label, assistantText: answer, proposals });
+  cid = db.saveExchange({ conversationId: cid, userText: text, scopeLabel: sc.label, scopeKey: sc.key, assistantText: answer, proposals });
   return db.getConversation(cid);
 }
 
@@ -221,8 +227,29 @@ async function testConnection() {
   }
 }
 
-function status() {
-  return { keyConfigured: !!API_KEY(), model: MODEL, baseUrl: BASE_URL };
+// 내 API 키로 쓸 수 있는 채팅 모델 목록 (설정 화면의 모델 선택용)
+async function listModels() {
+  if (!API_KEY()) throw new AiError('OPENAI_API_KEY 가 설정되지 않았습니다.');
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/models`, { headers: { Authorization: `Bearer ${API_KEY()}` }, signal: AbortSignal.timeout(15_000) });
+  } catch (e) { throw new AiError(`OpenAI 서버에 연결하지 못했습니다 (${e.message}).`); }
+  if (!res.ok) throw new AiError(`모델 목록을 가져오지 못했습니다 (응답 ${res.status}).`);
+  const data = await res.json();
+  const skip = /(embedding|whisper|tts|dall-e|image|audio|realtime|transcribe|moderation|search|davinci|babbage)/i;
+  return (data.data || []).map((m) => m.id)
+    .filter((id) => /^(gpt|o\d|chatgpt)/i.test(id) && !skip.test(id))
+    .sort((a, b) => b.localeCompare(a));
 }
 
-module.exports = { chat, testConnection, status, AiError, buildContext, resolveScope };
+function setModel(m) {
+  if (m !== null && m !== '' && (typeof m !== 'string' || !/^[\w.:\-/]{1,100}$/.test(m))) throw new db.ValidationError('모델 이름 형식이 올바르지 않습니다.');
+  db.setSetting('ai_model', m || null);
+  return status();
+}
+
+function status() {
+  return { keyConfigured: !!API_KEY(), model: model(), defaultModel: DEFAULT_MODEL, baseUrl: BASE_URL };
+}
+
+module.exports = { chat, testConnection, status, listModels, setModel, AiError, buildContext, resolveScope };

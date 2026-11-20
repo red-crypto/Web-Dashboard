@@ -13,6 +13,7 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dash-'));
 let fake, fakePort, srv;
 let lastPrompt = '';
+let lastBody = null;
 
 function seoulToday() {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul' }).format(new Date());
@@ -40,7 +41,10 @@ before(async () => {
     let b = '';
     req.on('data', (c) => (b += c));
     req.on('end', () => {
+      res.setHeader('Content-Type', 'application/json');
+      if (req.url.endsWith('/models')) return res.end(JSON.stringify({ data: [{ id: 'gpt-4o-mini' }, { id: 'gpt-6-luna' }, { id: 'text-embedding-3-small' }] }));
       const body = JSON.parse(b || '{}');
+      lastBody = body;
       lastPrompt = body.messages ? body.messages[0].content : '';
       const user = body.messages ? body.messages[body.messages.length - 1].content : '';
       res.setHeader('Content-Type', 'application/json');
@@ -136,4 +140,40 @@ test('이미 실행 중이면 두 번째 실행은 정상 종료 (바탕화면 �
   });
   assert.equal(code, 0);
   assert.equal((await api('GET', '/api/home')).status, 200);
+});
+
+test('참고 범위: 현재 프로젝트를 고르면 다른 프로젝트 정보는 보내지 않음', async () => {
+  const a = (await api('POST', '/api/projects', { name: '알파 프로젝트' })).data;
+  await api('POST', '/api/projects', { name: '비밀 베타 프로젝트' });
+  await api('POST', '/api/chat', { message: '다음에 뭘 해야 해?', scope: { type: 'project', projectId: a.id } });
+  assert.match(lastPrompt, /알파 프로젝트/);
+  assert.doesNotMatch(lastPrompt, /비밀 베타 프로젝트/);
+  await api('POST', '/api/chat', { message: '오늘 뭐부터 할까?', scope: { type: 'today' } });
+  assert.doesNotMatch(lastPrompt, /비밀 베타 프로젝트/);
+  await api('POST', '/api/chat', { message: '전체 요약', scope: { type: 'all' } });
+  assert.match(lastPrompt, /비밀 베타 프로젝트/);
+});
+
+test('범위를 바꾸면 이전 대화는 기본적으로 보내지 않음', async () => {
+  const p = (await api('POST', '/api/projects', { name: '히스토리 테스트' })).data;
+  const c = (await api('POST', '/api/chat', { message: '첫 질문', scope: { type: 'today' } })).data;
+  await api('POST', '/api/chat', { conversationId: c.id, message: '두번째', scope: { type: 'today' } });
+  assert.equal(lastBody.messages.length, 4); // system + 이전 2개 + 새 질문
+  await api('POST', '/api/chat', { conversationId: c.id, message: '프로젝트 질문', scope: { type: 'project', projectId: p.id } });
+  assert.equal(lastBody.messages.length, 2); // system + 새 질문만
+  assert.ok(!JSON.stringify(lastBody.messages).includes('첫 질문'));
+  await api('POST', '/api/chat', { conversationId: c.id, message: '오늘로 다시', scope: { type: 'today' }, includeHistory: true });
+  assert.ok(JSON.stringify(lastBody.messages).includes('첫 질문'));
+  assert.equal(lastBody.temperature, undefined);
+});
+
+test('GPT 모델 선택', async () => {
+  const models = (await api('GET', '/api/settings/models')).data;
+  assert.deepEqual(models, ['gpt-6-luna', 'gpt-4o-mini']);
+  const st = (await api('PUT', '/api/settings/model', { model: 'gpt-6-luna' })).data;
+  assert.equal(st.model, 'gpt-6-luna');
+  await api('POST', '/api/chat', { message: '모델 확인', scope: { type: 'today' } });
+  assert.equal(lastBody.model, 'gpt-6-luna');
+  assert.equal((await api('PUT', '/api/settings/model', { model: 'bad model; drop' })).status, 400);
+  assert.equal((await api('PUT', '/api/settings/model', { model: '' })).data.model, 'gpt-4o-mini');
 });

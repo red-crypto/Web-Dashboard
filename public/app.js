@@ -346,7 +346,12 @@ views.settings = async () => {
       <div class="card-head"><h3>OpenAI API 연결</h3></div>
       <div class="kv">
         <span class="k">API 키</span><span><span class="status-dot ${a.keyConfigured ? 'ok' : 'bad'}"></span>${a.keyConfigured ? '설정됨 (서버 환경변수)' : '설정되지 않음'}</span>
-        <span class="k">모델</span><span><code>${esc(a.model)}</code></span>
+        <span class="k">모델</span><span class="model-pick">
+          <input type="text" id="model-input" list="model-list" value="${esc(a.model)}" spellcheck="false" autocomplete="off">
+          <datalist id="model-list"></datalist>
+          <button class="btn small" data-action="load-models">내 키로 쓸 수 있는 모델 불러오기</button>
+          <button class="btn primary small" data-action="save-model">저장</button></span>
+        <span></span><span class="muted" style="font-size:12.5px">모델 이름을 직접 입력하거나 목록에서 고르세요. 비우고 저장하면 기본값(<code>${esc(a.defaultModel)}</code>)으로 돌아갑니다.</span>
         <span class="k">연결 상태</span><span id="conn-result" class="muted">아직 확인하지 않음</span>
       </div>
       <div style="margin-top:16px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -542,9 +547,18 @@ const chat = {
     if (seq !== this.viewSeq) return;
     this.conversation = conv;
     this.conversationId = id;
+    this.includeHistory = false;
     this.error = null;
   },
-  reset() { this.viewSeq++; this.conversation = null; this.conversationId = null; this.error = null; },
+  reset() { this.viewSeq++; this.conversation = null; this.conversationId = null; this.error = null; this.includeHistory = false; },
+
+  // 서버와 같은 규칙의 범위 키 (today | all | project:<id>)
+  scopeKey() { return this.scope.type === 'project' ? `project:${this.scope.projectId}` : this.scope.type; },
+  // 대화의 마지막 메시지와 지금 고른 범위가 다른가?
+  scopeChanged() {
+    const msgs = this.conversation ? this.conversation.messages : [];
+    return msgs.length > 0 && msgs[msgs.length - 1].scope_key !== this.scopeKey();
+  },
 
   mount(el, mode) { this.el = el; this.mode = mode; this.render(); },
 
@@ -587,6 +601,8 @@ const chat = {
         ${msgs.length ? msgs.map((m) => this.msgHtml(m)).join('') : `<div class="suggestions"><div class="hint">GPT가 위 범위의 할 일·일정을 보고 답합니다. 이렇게 물어보세요:</div>${suggestions.map((q) => `<button class="suggestion" data-chat="suggest">${esc(q)}</button>`).join('')}</div>`}
         ${this.sending ? '<div class="msg assistant typing">생각하는 중…</div>' : ''}
       </div>
+      ${this.scopeChanged() ? `<label class="scope-note-bar"><span>참고 범위가 바뀌어서 이전 대화는 GPT에 보내지 않아요.</span>
+        <span class="opt"><input type="checkbox" data-chat="include-history" ${this.includeHistory ? 'checked' : ''}> 이전 대화도 함께 보내기</span></label>` : ''}
       ${this.error ? `<div class="chat-error"><span>${esc(this.error)}</span><button class="btn small" data-chat="retry">재시도</button></div>` : ''}
       <form class="composer" data-chat="form">
         <textarea rows="1" placeholder="메시지 입력 (Enter 전송, Shift+Enter 줄바꿈)" ${this.sending ? 'disabled' : ''}>${esc(this.draft)}</textarea>
@@ -639,6 +655,7 @@ const chat = {
         conversationId: this.conversationId,
         message: text,
         scope: { type: this.scope.type, projectId: this.scope.projectId },
+        includeHistory: this.scopeChanged() && this.includeHistory,
       });
       if (seq !== this.viewSeq) { await refreshConvs(); return; } // 그 사이 다른 대화로 이동함
       const isNew = !this.conversationId;
@@ -699,6 +716,7 @@ document.addEventListener('click', async (e) => {
   const act = el.dataset.chat;
   if (act === 'scope') {
     chat.scope.type = el.dataset.type;
+    chat.includeHistory = false;
     if (chat.scope.type === 'project' && !chat.scope.projectId) {
       const p = currentProject || (projectOptionsCache || []).find((x) => x.status === 'active') || (projectOptionsCache || [])[0];
       chat.scope.projectId = p ? p.id : null;
@@ -729,7 +747,8 @@ document.addEventListener('click', async (e) => {
 document.addEventListener('change', async (e) => {
   const el = e.target.closest('[data-chat]');
   if (!el) return;
-  if (el.dataset.chat === 'scope-project') { chat.scope.projectId = Number(el.value); chat.render(); }
+  if (el.dataset.chat === 'scope-project') { chat.scope.projectId = Number(el.value); chat.includeHistory = false; chat.render(); }
+  if (el.dataset.chat === 'include-history') { chat.includeHistory = el.checked; }
   if (el.dataset.chat === 'pick-conv') {
     if (el.value) await chat.load(Number(el.value)); else chat.reset();
     chat.render();
@@ -814,6 +833,25 @@ document.addEventListener('click', async (e) => {
       break;
     }
     case 'reload': refresh(); break;
+    case 'load-models': {
+      el.disabled = true;
+      try {
+        const models = await api('GET', '/api/settings/models');
+        $('#model-list').innerHTML = models.map((m) => `<option value="${esc(m)}">`).join('');
+        toast(`모델 ${models.length}개를 불러왔어요. 입력칸을 눌러 고르세요`);
+        $('#model-input').focus();
+      } catch (err) { toast(err.message); }
+      el.disabled = false;
+      break;
+    }
+    case 'save-model': {
+      try {
+        const st = await api('PUT', '/api/settings/model', { model: $('#model-input').value.trim() });
+        toast(`모델: ${st.model}`);
+        refresh();
+      } catch (err) { toast(err.message); }
+      break;
+    }
     case 'shutdown': {
       if (!el.dataset.armed) { el.dataset.armed = '1'; el.textContent = '한 번 더 누르면 종료'; return; }
       try { await api('POST', '/api/shutdown'); } catch { /* 이미 꺼짐 */ }
