@@ -23,6 +23,7 @@ if (fs.existsSync(ENV_FILE)) process.loadEnvFile(ENV_FILE);
 const db = require('./db');
 const ai = require('./ai');
 const time = require('./time');
+const focus = require('./focus');
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '127.0.0.1'; // 기본은 내 컴퓨터에서만 접속 가능
@@ -41,6 +42,8 @@ const orNotFound = (v) => (v ? v : notFound());
 
 route('GET', '/api/settings', () => ({ timezone: time.TZ, today: time.today(), ai: ai.status(), dbPath: db.DB_PATH }));
 route('POST', '/api/settings/test', () => ai.testConnection());
+route('GET', '/api/settings/models', () => ai.listModels());
+route('PUT', '/api/settings/model', ({ body }) => ai.setModel(body.model));
 route('POST', '/api/shutdown', () => {
   // 응답을 보낸 뒤 종료 (설정 화면의 '서버 종료' 버튼)
   setTimeout(() => { console.log('설정 화면에서 서버를 종료했습니다.'); process.exit(0); }, 200);
@@ -48,6 +51,17 @@ route('POST', '/api/shutdown', () => {
 });
 
 route('GET', '/api/home', () => db.home());
+route('GET', '/api/today', () => focus.today());
+route('POST', '/api/carry-over', () => focus.carryOver());
+route('GET', '/api/search', ({ query }) => focus.search(query.get('q')));
+route('POST', '/api/timer/start', ({ body }) => focus.startTimer(body));
+route('POST', '/api/timer/stop', () => focus.stopTimer());
+route('POST', '/api/logs', ({ body }) => focus.addLog(body));
+route('GET', '/api/habits', () => focus.habits(time.today()));
+route('POST', '/api/habits', ({ body }) => focus.createHabit(body));
+route('PUT', '/api/habits/:id', ({ params, body }) => orNotFound(focus.updateHabit(params.id, body)));
+route('DELETE', '/api/habits/:id', ({ params }) => ({ ok: focus.deleteHabit(params.id) || notFound() }));
+route('POST', '/api/habits/:id/toggle', ({ params, body }) => orNotFound(focus.toggleHabit(params.id, body)));
 route('GET', '/api/calendar', ({ query }) => db.calendar(query.get('month')));
 
 route('GET', '/api/projects', ({ query }) => db.listProjects({ status: query.get('status') || undefined }));

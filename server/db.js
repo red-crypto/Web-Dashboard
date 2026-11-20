@@ -73,8 +73,51 @@ db.exec(`
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- 앱 설정 (예: 선택한 GPT 모델)
+  CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+
   CREATE INDEX IF NOT EXISTS idx_todos_due ON todos(due_date);
   CREATE INDEX IF NOT EXISTS idx_events_date ON events(date);
+`);
+
+// ---------- 기존 DB 업그레이드 (컬럼 추가) ----------
+function addColumn(table, column, ddl) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+  if (!cols.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+}
+// 메시지를 보낼 때 고른 참고 범위 (today | all | project:<id>). 범위가 바뀌면 이전 대화를 GPT에 보내지 않기 위해 사용
+addColumn('messages', 'scope_key', 'scope_key TEXT');
+// 일정 = 홈 타임라인의 "시간 블록". 끝냈는지 체크한다
+addColumn('events', 'done', 'done INTEGER NOT NULL DEFAULT 0');
+
+db.exec(`
+  -- 시간 기록 (타이머 또는 직접 입력). ended_at 이 NULL 이면 지금 돌아가는 타이머
+  CREATE TABLE IF NOT EXISTS time_logs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id   INTEGER REFERENCES events(id) ON DELETE SET NULL,
+    title      TEXT NOT NULL,
+    date       TEXT NOT NULL,                -- 기록한 날 (YYYY-MM-DD, 앱 시간대)
+    started_at TEXT,                         -- ISO 시각 (타이머일 때)
+    ended_at   TEXT,
+    minutes    INTEGER,                      -- 끝난 기록의 분
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_logs_date ON time_logs(date);
+
+  -- 습관과 날짜별 체크
+  CREATE TABLE IF NOT EXISTS habits (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    title      TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS habit_checks (
+    habit_id INTEGER NOT NULL REFERENCES habits(id) ON DELETE CASCADE,
+    date     TEXT NOT NULL,
+    PRIMARY KEY (habit_id, date)
+  );
 `);
 
 function tx(fn) {
@@ -254,8 +297,10 @@ function eventFields(b, creating) {
     end_time: optTime(b.end_time, '종료 시간'),
     project_id: optProject(b.project_id),
     memo: str(b.memo, '메모', { max: 2000 }),
+    done: b.done === undefined ? undefined : (b.done ? 1 : 0),
   };
   if (f.title === '') fail('일정 제목을 입력하세요.');
+  if (f.start_time && f.end_time && f.end_time <= f.start_time) fail('종료 시간은 시작 시간보다 늦어야 합니다.');
   if (creating && !f.date) fail('날짜를 입력하세요.');
   if (f.date === null) fail('날짜를 입력하세요.');
   return f;
@@ -325,7 +370,7 @@ function deleteConversation(id) { return run('DELETE FROM conversations WHERE id
 function parseProposal(p) { return { ...p, payload: JSON.parse(p.payload) }; }
 
 // 사용자 메시지 + 응답 + 제안을 한 번에 저장 (API 성공 시에만 호출)
-function saveExchange({ conversationId, userText, scopeLabel, assistantText, proposals }) {
+function saveExchange({ conversationId, userText, scopeLabel, scopeKey, assistantText, proposals }) {
   return tx(() => {
     let cid = conversationId;
     if (!cid) {
@@ -334,8 +379,8 @@ function saveExchange({ conversationId, userText, scopeLabel, assistantText, pro
     } else {
       run(`UPDATE conversations SET updated_at = datetime('now') WHERE id = ?`, cid);
     }
-    run('INSERT INTO messages (conversation_id, role, content, scope_label) VALUES (?, ?, ?, ?)', cid, 'user', userText, scopeLabel);
-    const mid = Number(run('INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)', cid, 'assistant', assistantText).lastInsertRowid);
+    run('INSERT INTO messages (conversation_id, role, content, scope_label, scope_key) VALUES (?, ?, ?, ?, ?)', cid, 'user', userText, scopeLabel, scopeKey);
+    const mid = Number(run('INSERT INTO messages (conversation_id, role, content, scope_key) VALUES (?, ?, ?, ?)', cid, 'assistant', assistantText, scopeKey).lastInsertRowid);
     for (const p of proposals) {
       run('INSERT INTO proposals (conversation_id, message_id, kind, payload) VALUES (?, ?, ?, ?)', cid, mid, p.kind, JSON.stringify(p.payload));
     }
@@ -366,7 +411,32 @@ function dismissProposal(id) {
   return p ? { proposal: parseProposal(p), changed: r.changes > 0 } : null;
 }
 
+// GPT에 함께 보낼 이전 대화: 가장 최근부터 거슬러 올라가며 "같은 범위"로 주고받은 메시지만 (최대 limit개).
+// 범위가 다른 메시지를 만나면 거기서 멈춘다 → 범위를 바꾸면 이전 대화는 보내지 않는다.
+function historyForScope(conversationId, scopeKey, limit = 20) {
+  const rows = all('SELECT role, content, scope_key FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?', conversationId, limit);
+  const out = [];
+  for (const m of rows) {
+    if (m.scope_key !== scopeKey) break;
+    out.push({ role: m.role, content: m.content });
+  }
+  return out.reverse();
+}
+// 대화의 마지막 메시지 범위 (화면에서 "범위가 바뀌었다" 안내용)
+function lastScopeKey(conversationId) {
+  const r = get('SELECT scope_key FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT 1', conversationId);
+  return r ? r.scope_key : null;
+}
+
+function getSetting(key) { const r = get('SELECT value FROM settings WHERE key = ?', key); return r ? r.value : null; }
+function setSetting(key, value) {
+  if (value === null || value === '') run('DELETE FROM settings WHERE key = ?', key);
+  else run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', key, value);
+}
+
 module.exports = {
+  run, tx, str, fail,
+  historyForScope, lastScopeKey, getSetting, setSetting,
   db, DB_PATH, ValidationError,
   listProjects, getProject, createProject, updateProject, deleteProject,
   listTodos, getTodo, createTodo, updateTodo, deleteTodo,
