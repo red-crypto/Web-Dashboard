@@ -14,6 +14,7 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dash-'));
 let fake, fakePort, srv;
 let lastPrompt = '';
 let lastBody = null;
+let lastPath = '';
 
 function seoulToday() {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul' }).format(new Date());
@@ -45,14 +46,27 @@ before(async () => {
       if (req.url.endsWith('/models')) return res.end(JSON.stringify({ data: [{ id: 'gpt-4o-mini' }, { id: 'gpt-6-luna' }, { id: 'text-embedding-3-small' }] }));
       const body = JSON.parse(b || '{}');
       lastBody = body;
-      lastPrompt = body.messages ? body.messages[0].content : '';
-      const user = body.messages ? body.messages[body.messages.length - 1].content : '';
-      res.setHeader('Content-Type', 'application/json');
+      lastPath = req.url;
+      // 실제 OpenAI처럼: Responses API(/v1/responses)가 기본, 'legacy-only' 모델은 /responses 를 모르는 서버 흉내(404)
+      const isResponses = req.url.endsWith('/responses');
+      if (isResponses && body.model === 'legacy-only') { res.statusCode = 404; return res.end(JSON.stringify({ error: { message: 'Not found' } })); }
+      const msgs = isResponses ? body.input : body.messages;
+      lastPrompt = isResponses ? body.instructions : body.messages[0].content;
+      const user = msgs[msgs.length - 1].content;
       if (user.includes('FAIL')) { res.statusCode = 500; return res.end(JSON.stringify({ error: { message: 'boom' } })); }
+      let text = '1. 지연된 항목부터 처리하세요.';
+      let call = null;
       if (user.includes('등록')) {
-        return res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'propose_event', arguments: JSON.stringify({ title: '프로젝트 회의', date: addDays(seoulToday(), 1), start_time: '15:00' }) } }] } }] }));
+        text = '';
+        call = { name: 'propose_event', arguments: JSON.stringify({ title: '프로젝트 회의', date: addDays(seoulToday(), 1), start_time: '15:00' }) };
       }
-      res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: '1. 지연된 항목부터 처리하세요.' } }] }));
+      if (isResponses) {
+        const output = [{ type: 'reasoning', id: 'rs_1', summary: [] }];
+        if (text) output.push({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] });
+        if (call) output.push({ type: 'function_call', call_id: 'c1', ...call });
+        return res.end(JSON.stringify({ id: 'resp_1', output }));
+      }
+      res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: text || null, tool_calls: call ? [{ id: 'c1', type: 'function', function: call }] : undefined } }] }));
     });
   });
   await new Promise((r) => fake.listen(0, '127.0.0.1', r));
@@ -158,12 +172,12 @@ test('범위를 바꾸면 이전 대화는 기본적으로 보내지 않음', as
   const p = (await api('POST', '/api/projects', { name: '히스토리 테스트' })).data;
   const c = (await api('POST', '/api/chat', { message: '첫 질문', scope: { type: 'today' } })).data;
   await api('POST', '/api/chat', { conversationId: c.id, message: '두번째', scope: { type: 'today' } });
-  assert.equal(lastBody.messages.length, 4); // system + 이전 2개 + 새 질문
+  assert.equal(lastBody.input.length, 3); // 이전 2개 + 새 질문 (시스템 지시는 instructions 로 따로)
   await api('POST', '/api/chat', { conversationId: c.id, message: '프로젝트 질문', scope: { type: 'project', projectId: p.id } });
-  assert.equal(lastBody.messages.length, 2); // system + 새 질문만
-  assert.ok(!JSON.stringify(lastBody.messages).includes('첫 질문'));
+  assert.equal(lastBody.input.length, 1); // 새 질문만
+  assert.ok(!JSON.stringify(lastBody.input).includes('첫 질문'));
   await api('POST', '/api/chat', { conversationId: c.id, message: '오늘로 다시', scope: { type: 'today' }, includeHistory: true });
-  assert.ok(JSON.stringify(lastBody.messages).includes('첫 질문'));
+  assert.ok(JSON.stringify(lastBody.input).includes('첫 질문'));
   assert.equal(lastBody.temperature, undefined);
 });
 
@@ -211,4 +225,22 @@ test('홈: 시간 블록 완료, 타이머, 직접 기록, 습관, 미룬 일 �
   const s = (await api('GET', `/api/search?q=${encodeURIComponent('어제 못한')}`)).data;
   assert.equal(s.todos[0].title, '어제 못한 일');
   assert.equal((await api('GET', `/api/search?q=${encodeURIComponent('%')}`)).data.todos.length, 0);
+});
+
+test('Responses API 로 도구 호출 (추론 모델 대응), 미지원 서버면 Chat Completions 로 자동 전환', async () => {
+  await api('PUT', '/api/settings/model', { model: 'gpt-6-luna' });
+  let r = await api('POST', '/api/chat', { message: '내일 오후 3시에 회의 등록해줘', scope: { type: 'today' } });
+  assert.equal(lastPath, '/v1/responses');
+  assert.equal(lastBody.store, false);
+  assert.equal(lastBody.reasoning, undefined);
+  assert.equal(lastBody.tools[0].type, 'function');
+  assert.equal(lastBody.tools[0].name, 'propose_event');
+  assert.equal(r.data.messages.at(-1).proposals[0].payload.start_time, '15:00');
+
+  await api('PUT', '/api/settings/model', { model: 'legacy-only' });
+  r = await api('POST', '/api/chat', { message: '내일 오후 3시에 회의 등록해줘', scope: { type: 'today' } });
+  assert.equal(r.status, 200);
+  assert.equal(lastPath, '/v1/chat/completions');
+  assert.equal(r.data.messages.at(-1).proposals[0].kind, 'event');
+  await api('PUT', '/api/settings/model', { model: '' });
 });

@@ -152,15 +152,15 @@ function toProposal(call) {
   return null;
 }
 
-async function callOpenAI(body) {
+async function postOpenAI(path, body) {
   if (!API_KEY()) throw new AiError('OPENAI_API_KEY 환경변수가 설정되지 않았습니다. README의 "API 키 설정"을 확인하세요.');
   let res;
   try {
-    res = await fetch(`${BASE_URL}/chat/completions`, {
+    res = await fetch(`${BASE_URL}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY()}` },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(90_000),
     });
   } catch (e) {
     throw new AiError(`OpenAI 서버에 연결하지 못했습니다 (${e.name === 'TimeoutError' ? '시간 초과' : e.message}).`);
@@ -168,12 +168,42 @@ async function callOpenAI(body) {
   const text = await res.text();
   let data;
   try { data = JSON.parse(text); } catch { data = null; }
-  if (!res.ok) {
-    const msg = data && data.error && data.error.message ? data.error.message : text.slice(0, 200);
-    throw new AiError(`OpenAI 오류 ${res.status}: ${msg}`);
+  return { status: res.status, ok: res.ok, data, text };
+}
+const apiError = (r) => new AiError(`OpenAI 오류 ${r.status}: ${r.data && r.data.error && r.data.error.message ? r.data.error.message : r.text.slice(0, 200)}`);
+
+// Responses API 용 도구 정의 (Chat Completions 형식에서 변환)
+const RESPONSE_TOOLS = TOOLS.map((t) => ({ type: 'function', ...t.function }));
+
+// 모델 호출. 기본은 Responses API(/v1/responses): 최신 모델(추론 모델 포함)도 도구 호출을 지원한다.
+// 서버가 /responses 를 모르면(404, OpenAI 호환 서버 등) Chat Completions 로 다시 시도한다.
+// 반환: { content, tool_calls: [{ function: { name, arguments } }] }
+async function callModel({ instructions, messages }) {
+  const r = await postOpenAI('/responses', {
+    model: model(),
+    instructions,
+    input: messages,
+    tools: RESPONSE_TOOLS,
+    store: false, // 대화 내용을 OpenAI 쪽에 저장하지 않음
+  });
+  if (r.ok) {
+    const out = (r.data && r.data.output) || [];
+    const content = out.filter((o) => o.type === 'message')
+      .flatMap((o) => o.content || []).filter((c) => c.type === 'output_text').map((c) => c.text).join('');
+    const toolCalls = out.filter((o) => o.type === 'function_call').map((o) => ({ function: { name: o.name, arguments: o.arguments } }));
+    if (!r.data || !Array.isArray(r.data.output)) throw new AiError('OpenAI 응답 형식이 올바르지 않습니다.');
+    return { content, tool_calls: toolCalls };
   }
-  if (!data || !data.choices || !data.choices[0]) throw new AiError('OpenAI 응답 형식이 올바르지 않습니다.');
-  return data.choices[0].message;
+  if (r.status !== 404) throw apiError(r);
+
+  const c = await postOpenAI('/chat/completions', {
+    model: model(),
+    tools: TOOLS,
+    messages: [{ role: 'system', content: instructions }, ...messages],
+  });
+  if (!c.ok) throw apiError(c);
+  if (!c.data || !c.data.choices || !c.data.choices[0]) throw new AiError('OpenAI 응답 형식이 올바르지 않습니다.');
+  return c.data.choices[0].message;
 }
 
 // 채팅 1회: 성공하면 대화에 저장하고 결과를 돌려준다. 실패하면 아무것도 저장하지 않는다.
@@ -194,11 +224,9 @@ async function chat({ conversationId, message, scope, includeHistory = false }) 
   }
 
   // temperature 등은 보내지 않는다 (일부 최신 모델은 기본값 외의 값을 거부함)
-  const reply = await callOpenAI({
-    model: model(),
-    tools: TOOLS,
+  const reply = await callModel({
+    instructions: `${SYSTEM_PROMPT}\n\n[참고 범위: ${sc.label}]\n[데이터]\n${buildContext(sc)}`,
     messages: [
-      { role: 'system', content: `${SYSTEM_PROMPT}\n\n[참고 범위: ${sc.label}]\n[데이터]\n${buildContext(sc)}` },
       ...history.map((m) => ({ role: m.role, content: m.content })),
       { role: 'user', content: text },
     ],
