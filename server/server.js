@@ -91,7 +91,12 @@ function readBody(req) {
 const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
 
 function serveStatic(pathname, res) {
-  const rel = pathname === '/' ? 'index.html' : decodeURIComponent(pathname).replace(/^\/+/, '');
+  let rel;
+  try {
+    rel = pathname === '/' ? 'index.html' : decodeURIComponent(pathname).replace(/^\/+/, '');
+  } catch {
+    res.writeHead(400); return res.end('Bad request'); // 잘못된 %XX 인코딩
+  }
   const file = path.normalize(path.join(PUBLIC_DIR, rel));
   if (!file.startsWith(PUBLIC_DIR + path.sep)) { res.writeHead(403); return res.end(); }
   fs.readFile(file, (err, buf) => {
@@ -107,7 +112,14 @@ function serveStatic(pathname, res) {
   });
 }
 
-const server = http.createServer(async (req, res) => {
+const server = http.createServer((req, res) => {
+  handle(req, res).catch((e) => {
+    console.error(e);
+    if (!res.headersSent) send(res, 500, { error: '서버 오류가 발생했습니다.' }); else res.end();
+  });
+});
+
+async function handle(req, res) {
   const url = new URL(req.url, 'http://localhost');
   if (!url.pathname.startsWith('/api/')) return serveStatic(url.pathname, res);
 
@@ -126,7 +138,7 @@ const server = http.createServer(async (req, res) => {
     console.error(e);
     send(res, 500, { error: '서버 오류가 발생했습니다.' });
   }
-});
+}
 
 server.listen(PORT, HOST, () => {
   const s = ai.status();

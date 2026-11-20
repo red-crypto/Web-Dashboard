@@ -114,3 +114,10 @@ test('채팅: API 오류 시 502 + 아무것도 저장하지 않음', async () =
   assert.equal(r.data.retryable, true);
   assert.equal((await api('GET', '/api/conversations')).data.length, convs);
 });
+
+test('잘못된 URL 인코딩은 400을 돌려주고 서버는 계속 동작', async () => {
+  const r = await fetch(BASE + '/%ZZ');
+  assert.equal(r.status, 400);
+  const h = await api('GET', '/api/home');
+  assert.equal(h.status, 200);
+});

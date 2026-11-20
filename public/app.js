@@ -512,9 +512,10 @@ function projectModal(project) {
     const body = { name: v.name, goal: v.goal, due_date: v.due_date || null, status: v.status };
     if (project) await api('PUT', `/api/projects/${project.id}`, body);
     else { const created = await api('POST', '/api/projects', body); location.hash = `#/projects/${created.id}`; }
+    projectOptionsCache = null; // 채팅의 프로젝트 목록도 새로 받도록
     toast(project ? '수정했어요' : '프로젝트를 만들었어요');
   },
-  project ? async () => { await api('DELETE', `/api/projects/${project.id}`); toast('삭제했어요 (할 일은 개인 할 일로 남습니다)'); location.hash = '#/projects'; } : null);
+  project ? async () => { await api('DELETE', `/api/projects/${project.id}`); projectOptionsCache = null; toast('삭제했어요 (할 일은 개인 할 일로 남습니다)'); location.hash = '#/projects'; } : null);
 }
 
 // ===================== AI 채팅 =====================
@@ -528,13 +529,17 @@ const chat = {
   applying: new Set(),
   el: null,
   mode: null,
+  viewSeq: 0, // 보고 있는 대화가 바뀔 때마다 증가 (늦게 도착한 응답이 다른 대화를 덮어쓰지 않도록)
 
   async load(id) {
-    this.conversation = await api('GET', `/api/conversations/${id}`);
+    const seq = ++this.viewSeq;
+    const conv = await api('GET', `/api/conversations/${id}`);
+    if (seq !== this.viewSeq) return;
+    this.conversation = conv;
     this.conversationId = id;
     this.error = null;
   },
-  reset() { this.conversation = null; this.conversationId = null; this.error = null; },
+  reset() { this.viewSeq++; this.conversation = null; this.conversationId = null; this.error = null; },
 
   mount(el, mode) { this.el = el; this.mode = mode; this.render(); },
 
@@ -623,12 +628,14 @@ const chat = {
     this.sending = true;
     this.error = null;
     this.render();
+    const seq = this.viewSeq;
     try {
       const conv = await api('POST', '/api/chat', {
         conversationId: this.conversationId,
         message: text,
         scope: { type: this.scope.type, projectId: this.scope.projectId },
       });
+      if (seq !== this.viewSeq) { await refreshConvs(); return; } // 그 사이 다른 대화로 이동함
       const isNew = !this.conversationId;
       this.conversation = conv;
       this.conversationId = conv.id;
@@ -637,7 +644,7 @@ const chat = {
       await refreshConvs();
     } catch (e) {
       // 실패해도 입력한 메시지는 입력창에 그대로 남긴다
-      this.error = e.message;
+      if (seq === this.viewSeq) this.error = e.message;
     } finally {
       this.sending = false;
       this.render();
@@ -745,6 +752,7 @@ function openDrawer() {
   // 프로젝트 화면에서 열면 현재 프로젝트를 기본 범위로
   if (currentProject) chat.scope = { type: 'project', projectId: currentProject.id };
   else if (chat.scope.type === 'project' && currentRoute.name === 'home') chat.scope = { type: 'today', projectId: null };
+  projectOptionsCache = null; // 최신 프로젝트 목록으로
   $('#drawer').classList.add('open');
   $('#drawer').setAttribute('aria-hidden', 'false');
   refreshConvs().then(() => chat.mount($('#drawer-chat'), 'drawer'));
