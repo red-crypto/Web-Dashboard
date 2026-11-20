@@ -885,9 +885,10 @@ document.addEventListener('keydown', (e) => {
 document.addEventListener('click', (e) => { if (e.target.closest('[data-action=open-search]')) openSearch(); });
 
 // ===================== 시작 =====================
-(async () => {
+// home.js 등 뒤에 오는 스크립트까지 모두 실행된 뒤에 시작한다 (그 전에 그리면 홈 화면이 아직 없음)
+document.addEventListener('DOMContentLoaded', async () => {
   try { settings = await api('GET', '/api/settings'); } catch { /* 기본값 사용 */ }
   if (!location.hash) history.replaceState(null, '', '#/home');
   render();
   refreshConvs();
-})();
+});

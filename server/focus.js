@@ -56,11 +56,21 @@ function addLog(b) {
   return db.get(`${LOG_SELECT} WHERE id = ?`, Number(r.lastInsertRowid));
 }
 
+// 그날 기록한 시간(분). 타이머 기록은 그날 0시~24시와 겹치는 부분만 센다 (자정을 넘긴 타이머는 날짜별로 나뉨)
 function trackedMinutes(date) {
-  const done = db.get('SELECT COALESCE(SUM(minutes), 0) AS m FROM time_logs WHERE date = ? AND minutes IS NOT NULL', date).m;
-  const cur = running();
-  const live = cur && cur.date === date ? Math.max(0, Math.round((Date.now() - new Date(cur.started_at)) / 60000)) : 0;
-  return done + live;
+  const manual = db.get('SELECT COALESCE(SUM(minutes), 0) AS m FROM time_logs WHERE date = ? AND started_at IS NULL', date).m;
+  const dayStart = time.startOfDay(date).getTime();
+  const dayEnd = time.startOfDay(time.addDays(date, 1)).getTime();
+  const timers = db.all(`SELECT started_at, ended_at FROM time_logs
+                         WHERE started_at IS NOT NULL AND started_at < ? AND (ended_at IS NULL OR ended_at > ?)`,
+  new Date(dayEnd).toISOString(), new Date(dayStart).toISOString());
+  let ms = 0;
+  for (const t of timers) {
+    const s = Math.max(dayStart, Date.parse(t.started_at));
+    const e = Math.min(dayEnd, t.ended_at ? Date.parse(t.ended_at) : Date.now());
+    if (e > s) ms += e - s;
+  }
+  return manual + Math.round(ms / 60000);
 }
 
 // ---------- 습관 ----------
@@ -145,7 +155,7 @@ function search(q) {
 }
 
 module.exports = {
-  today, carryOver, search,
+  today, carryOver, search, trackedMinutes,
   startTimer, stopTimer, addLog, running,
   habits, createHabit, updateHabit, deleteHabit, toggleHabit,
 };

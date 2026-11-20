@@ -58,4 +58,17 @@ function isTime(s) {
   return typeof s === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(s);
 }
 
-module.exports = { TZ, today, nowTime, addDays, weekday, weekRange, isDate, isTime, WEEKDAY_KO };
+// 설정 시간대에서 'YYYY-MM-DD' 00:00 이 되는 실제 시각 (Date)
+function startOfDay(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  let t = Date.UTC(y, m - 1, d);
+  // 해당 시각을 시간대로 바꿨을 때의 차이만큼 보정 (두 번이면 서머타임 경계도 맞춰진다)
+  for (let i = 0; i < 2; i++) {
+    const p = partsIn(new Date(t), TZ);
+    const asUtc = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute);
+    t -= asUtc - Date.UTC(y, m - 1, d);
+  }
+  return new Date(t);
+}
+
+module.exports = { startOfDay, TZ, today, nowTime, addDays, weekday, weekRange, isDate, isTime, WEEKDAY_KO };
