@@ -1,9 +1,20 @@
 // 개인 대시보드 서버. 외부 패키지 없이 Node 내장 모듈만 사용한다.
 // 실행: npm start  (또는 node server/server.js)
+//   --open : 서버가 뜨면 브라우저를 연다. 이미 실행 중이면 브라우저만 열고 끝낸다. (바탕화면 아이콘용)
 
 const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
+const { spawn } = require('node:child_process');
+
+// node:sqlite 는 Node 22.13 이상에서만 플래그 없이 동작한다
+const [NODE_MAJOR, NODE_MINOR] = process.versions.node.split('.').map(Number);
+if (NODE_MAJOR < 22 || (NODE_MAJOR === 22 && NODE_MINOR < 13)) {
+  console.error(`Node.js ${process.versions.node} 는 지원하지 않습니다. 22.13 이상(22 LTS 권장)을 설치하세요: https://nodejs.org`);
+  process.exit(1);
+}
+
+const OPEN_BROWSER = process.argv.includes('--open');
 
 // .env 파일이 있으면 읽는다 (OPENAI_API_KEY 등). 이미 설정된 환경변수가 우선.
 const ENV_FILE = path.join(__dirname, '..', '.env');
@@ -30,6 +41,11 @@ const orNotFound = (v) => (v ? v : notFound());
 
 route('GET', '/api/settings', () => ({ timezone: time.TZ, today: time.today(), ai: ai.status(), dbPath: db.DB_PATH }));
 route('POST', '/api/settings/test', () => ai.testConnection());
+route('POST', '/api/shutdown', () => {
+  // 응답을 보낸 뒤 종료 (설정 화면의 '서버 종료' 버튼)
+  setTimeout(() => { console.log('설정 화면에서 서버를 종료했습니다.'); process.exit(0); }, 200);
+  return { ok: true };
+});
 
 route('GET', '/api/home', () => db.home());
 route('GET', '/api/calendar', ({ query }) => db.calendar(query.get('month')));
@@ -125,6 +141,11 @@ async function handle(req, res) {
 
   const r = routes.find((x) => x.method === req.method && x.re.test(url.pathname));
   if (!r) return send(res, 404, { error: '없는 API 입니다.' });
+  // 다른 웹사이트가 내 대시보드 API를 몰래 호출하지 못하도록, 변경 요청은 JSON 형식만 받는다
+  // (브라우저는 다른 사이트에서 보내는 JSON 요청을 사전 확인 없이 보내지 않는다)
+  if (req.method !== 'GET' && !String(req.headers['content-type'] || '').startsWith('application/json')) {
+    return send(res, 415, { error: 'Content-Type: application/json 이 필요합니다.' });
+  }
   const m = url.pathname.match(r.re);
   const params = Object.fromEntries(r.keys.map((k, i) => [k, Number(m[i + 1])]));
   try {
@@ -140,8 +161,37 @@ async function handle(req, res) {
   }
 }
 
+const APP_URL = `http://localhost:${PORT}`;
+
+function openBrowser(url) {
+  const cmd = process.platform === 'win32' ? ['cmd', ['/c', 'start', '""', url]]
+    : process.platform === 'darwin' ? ['open', [url]]
+    : ['xdg-open', [url]];
+  try {
+    const child = spawn(cmd[0], cmd[1], { stdio: 'ignore', detached: true, windowsHide: true });
+    child.on('error', () => console.log(`브라우저를 열지 못했습니다. 직접 여세요: ${url}`));
+    child.unref();
+  } catch { console.log(`브라우저를 열지 못했습니다. 직접 여세요: ${url}`); }
+}
+
+server.on('error', async (e) => {
+  if (e.code !== 'EADDRINUSE') throw e;
+  // 포트가 이미 사용 중: 대시보드가 이미 켜져 있으면 브라우저만 연다
+  try {
+    const r = await fetch(`http://127.0.0.1:${PORT}/api/settings`, { signal: AbortSignal.timeout(3000) });
+    if (r.ok && (await r.json()).timezone) {
+      console.log(`대시보드가 이미 실행 중입니다: ${APP_URL}`);
+      if (OPEN_BROWSER) openBrowser(APP_URL);
+      process.exit(0);
+    }
+  } catch { /* 다른 프로그램이 포트를 쓰는 경우 */ }
+  console.error(`포트 ${PORT} 를 다른 프로그램이 사용 중입니다. .env 에 PORT=3001 처럼 다른 포트를 지정하세요.`);
+  process.exit(1);
+});
+
 server.listen(PORT, HOST, () => {
   const s = ai.status();
+  if (OPEN_BROWSER) openBrowser(APP_URL);
   console.log(`대시보드 실행 중: http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
   console.log(`  시간대: ${time.TZ} (오늘 ${time.today()})`);
   console.log(`  DB: ${db.DB_PATH}`);

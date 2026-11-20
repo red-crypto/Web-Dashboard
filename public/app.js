@@ -10,7 +10,7 @@ const WD = ['일', '월', '화', '수', '목', '금', '토'];
 async function api(method, url, body) {
   const res = await fetch(url, {
     method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    headers: method === 'GET' ? undefined : { 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
   });
   let data = null;
@@ -366,6 +366,11 @@ views.settings = async () => {
       <div class="card-head"><h3>데이터</h3></div>
       <div class="kv"><span class="k">DB 파일</span><span><code style="overflow-wrap:anywhere">${esc(settings.dbPath)}</code></span></div>
       <p class="muted" style="font-size:13px;margin:14px 0 0">이 파일 하나만 복사해 두면 백업이 됩니다.</p>
+    </section>
+    <section class="card">
+      <div class="card-head"><h3>서버</h3></div>
+      <p class="muted" style="font-size:13px;margin:0 0 14px">바탕화면 아이콘이나 자동 실행으로 켠 서버는 창 없이 동작합니다. 여기서 끌 수 있고, 아이콘을 다시 누르면 켜집니다.</p>
+      <button class="btn danger" data-action="shutdown">서버 종료</button>
     </section>
   </div>`;
 };
@@ -809,6 +814,12 @@ document.addEventListener('click', async (e) => {
       break;
     }
     case 'reload': refresh(); break;
+    case 'shutdown': {
+      if (!el.dataset.armed) { el.dataset.armed = '1'; el.textContent = '한 번 더 누르면 종료'; return; }
+      try { await api('POST', '/api/shutdown'); } catch { /* 이미 꺼짐 */ }
+      document.body.innerHTML = '<div class="empty" style="margin:20vh auto;max-width:420px">서버를 종료했습니다. 다시 쓰려면 바탕화면의 <b>My Dashboard</b> 아이콘을 누르거나 <code>npm start</code> 로 실행하세요.</div>';
+      break;
+    }
   }
 });
 

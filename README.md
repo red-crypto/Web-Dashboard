@@ -29,6 +29,32 @@ npm start
 
 API 키가 없어도 할 일·일정·프로젝트 기능은 모두 동작합니다. AI 채팅만 비활성 상태가 됩니다.
 
+## 2-1. 더 편하게: 바탕화면 아이콘 + 자동 실행
+
+한 번만 설치하면 그다음부터는 **바탕화면의 `My Dashboard` 아이콘을 더블클릭**하면 됩니다. 아이콘을 누르면 서버가 창 없이 켜지고 브라우저가 열립니다. 서버가 이미 켜져 있으면 브라우저만 열립니다.
+
+설치할 때 "컴퓨터를 켤 때 자동 실행"을 고르면, 부팅/로그인할 때 서버가 미리 켜집니다. 그러면 브라우저 즐겨찾기에 `http://localhost:3000` 을 넣어 두고 바로 열 수도 있습니다.
+
+**Windows**
+
+1. 탐색기에서 `launcher\windows\install.bat` 를 더블클릭합니다.
+2. 자동 실행 여부를 `Y` / `N` 으로 답합니다.
+3. 바탕화면에 `My Dashboard` 아이콘이 생깁니다.
+
+**macOS**
+
+1. Finder에서 `launcher/mac/install.command` 를 더블클릭합니다. ("확인되지 않은 개발자" 경고가 뜨면 우클릭 → 열기)
+2. 자동 실행 여부를 `y` / `n` 으로 답합니다.
+3. 바탕화면에 `My Dashboard` 아이콘이 생깁니다.
+
+> macOS에서 자동 실행을 쓰려면 저장소를 `~/Desktop`, `~/Documents`, `~/Downloads` **밖**(예: `~/Web-Dashboard`)에 두세요. 이 폴더들은 macOS 보호 정책 때문에 자동 실행된 서버가 파일을 읽지 못할 수 있습니다.
+
+**서버 끄기**: 대시보드 **설정** 화면 맨 아래의 `서버 종료` 버튼. 다시 켜려면 아이콘을 누르면 됩니다.
+**지우기**: `launcher/windows/uninstall.bat` 또는 `launcher/mac/uninstall.command` 실행 (데이터는 그대로 남습니다).
+**문제가 생기면**: 창 없이 실행된 서버의 로그는 `data/server.log` 에 쌓입니다. 창을 띄워서 직접 보고 싶으면 Windows는 `launcher\windows\start.bat`, macOS/Linux는 `npm start` 로 실행하세요.
+
+저장소 폴더를 다른 곳으로 옮겼다면 install 스크립트를 한 번 더 실행해 주세요 (아이콘이 이전 경로를 가리키기 때문).
+
 ## 3. API 키 설정 (AI 채팅용)
 
 OpenAI API 키는 **서버(내 컴퓨터)에서만** 읽고 브라우저로는 보내지 않습니다.
@@ -104,7 +130,12 @@ public/
   app.js      화면 렌더링과 이벤트 처리 (프레임워크 없음)
 test/
   api.test.js API 통합 테스트
+launcher/
+  windows/    install.bat · uninstall.bat · start.bat(창 띄워 실행) · start-hidden.vbs(창 없이 실행)
+  mac/        install.command · uninstall.command · start-dashboard.command
 ```
+
+`node server/server.js --open` 으로 실행하면 서버가 뜬 뒤 브라우저를 엽니다. 이미 실행 중이면 브라우저만 열고 바로 끝납니다. 아이콘은 이 옵션을 씁니다.
 
 데이터 흐름은 단순합니다: 브라우저(`app.js`) → `fetch('/api/...')` → `server.js` 라우트 → `db.js` 함수 → SQLite. 채팅만 `ai.js` 를 거쳐 OpenAI를 호출합니다.
 

@@ -121,3 +121,19 @@ test('잘못된 URL 인코딩은 400을 돌려주고 서버는 계속 동작', a
   const h = await api('GET', '/api/home');
   assert.equal(h.status, 200);
 });
+
+test('JSON이 아닌 변경 요청은 거부 (다른 사이트의 몰래 호출 방지)', async () => {
+  const r = await fetch(BASE + '/api/todos', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: '{"title":"x"}' });
+  assert.equal(r.status, 415);
+});
+
+test('이미 실행 중이면 두 번째 실행은 정상 종료 (바탕화면 아이콘 재클릭)', async () => {
+  const code = await new Promise((resolve) => {
+    const p = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(__dirname, '..', 'server', 'server.js')], {
+      env: { ...process.env, PORT: String(PORT), DB_PATH: path.join(tmp, 'test.db') }, stdio: 'ignore',
+    });
+    p.on('exit', resolve);
+  });
+  assert.equal(code, 0);
+  assert.equal((await api('GET', '/api/home')).status, 200);
+});
