@@ -73,7 +73,7 @@ function todoItem(t) {
   cache.todos.set(t.id, t);
   const overdue = !t.done && t.due_date && t.due_date < today();
   const meta = [];
-  if (t.due_date) meta.push(`<span class="tag ${overdue ? 'danger' : t.due_date === today() ? 'lime' : ''}">${overdue ? '지연 · ' : ''}${esc(D.rel(t.due_date))}</span>`);
+  if (t.due_date) meta.push(`<span class="tag ${overdue ? 'danger' : t.due_date === today() ? 'accent' : ''}">${overdue ? '지연 · ' : ''}${esc(D.rel(t.due_date))}</span>`);
   if (t.project_name) meta.push(`<span>${esc(t.project_name)}</span>`);
   return `<li class="todo ${t.done ? 'done' : ''} ${overdue ? 'overdue' : ''}">
     <button class="check" data-action="toggle-todo" data-id="${t.id}" aria-label="${t.done ? '완료 취소' : '완료'}">${t.done ? '✓' : ''}</button>
@@ -110,78 +110,9 @@ function empty(text, btnLabel, action, extra = '') {
   return `<div class="empty"><div>${esc(text)}</div><button class="btn primary small" data-action="${action}" ${extra}>${esc(btnLabel)}</button></div>`;
 }
 
-// 미니 캘린더 (홈 오른쪽)
-function miniCalendar(ym, marks) {
-  const first = `${ym}-01`;
-  const start = D.add(first, -D.wd(first));
-  const t = today();
-  let cells = WD.map((w, i) => `<div class="wd ${i === 0 ? 'sun' : ''}">${w}</div>`).join('');
-  for (let i = 0; i < 42; i++) {
-    const d = D.add(start, i);
-    if (i >= 35 && D.month(d) !== ym) break;
-    const cls = ['day', D.month(d) !== ym && 'out', d === t && 'today', marks.has(d) && 'has', D.wd(d) === 0 && 'sun'].filter(Boolean).join(' ');
-    cells += `<div class="${cls}" data-action="goto-date" data-date="${d}">${Number(d.slice(8))}</div>`;
-  }
-  const [y, m] = ym.split('-').map(Number);
-  return `<div class="mini-cal">
-    <div class="cal-nav"><button class="icon-btn" data-action="mini-month" data-ym="${D.addMonth(ym, -1)}">‹</button>
-      <strong>${y}년 ${m}월</strong>
-      <button class="icon-btn" data-action="mini-month" data-ym="${D.addMonth(ym, 1)}">›</button></div>
-    <div class="mini-grid">${cells}</div></div>`;
-}
-
 // ===================== 화면들 =====================
 const views = {};
-let homeMiniMonth = null;
-
-views.home = async () => {
-  const h = await api('GET', '/api/home');
-  const ym = homeMiniMonth || D.month(h.today);
-  const cal = await api('GET', `/api/calendar?month=${ym}`);
-  const marks = new Set([...cal.events.map((e) => e.date), ...cal.todos.filter((t) => !t.done).map((t) => t.due_date)]);
-
-  const todayBody = (h.overdue.length || h.todayTodos.length)
-    ? `${h.overdue.length ? `<div class="section-label warn">기한 지남 ${h.overdue.length}</div><ul class="todo-list">${h.overdue.map(todoItem).join('')}</ul>` : ''}
-       ${h.overdue.length && h.todayTodos.length ? '<div class="section-label">오늘</div>' : ''}
-       ${h.todayTodos.length ? `<ul class="todo-list">${h.todayTodos.map(todoItem).join('')}</ul>` : ''}`
-    : empty('오늘 마감인 할 일이 없어요.', '+ 오늘 할 일 추가', 'new-todo', `data-date="${h.today}"`);
-
-  return `
-  <section class="home">
-    <header class="home-head">
-      <div><div class="eyebrow">${esc(D.long(h.today))}</div><h1>오늘의 대시보드</h1></div>
-      <div class="actions">
-        <button class="btn primary" data-action="new-todo" data-date="${h.today}">+ 할 일</button>
-        <button class="btn" data-action="new-event" data-date="${h.today}">+ 일정</button>
-      </div>
-    </header>
-    <div class="stats">
-      <a class="stat" href="#/todos?f=today"><span class="label">오늘 남은 할 일<span class="arrow">↗</span></span><span class="num">${h.stats.todayRemaining}</span></a>
-      <a class="stat" href="#/todos?f=week"><span class="label">이번 주 마감<span class="arrow">↗</span></span><span class="num">${h.stats.weekDue}</span></a>
-      <a class="stat" href="#/projects"><span class="label">진행 중인 프로젝트<span class="arrow">↗</span></span><span class="num">${h.stats.activeProjects}</span></a>
-    </div>
-    <div class="home-grid">
-      <section class="card area-today">
-        <div class="card-head"><h3>오늘 할 일</h3><a class="link" href="#/todos?f=today">전체 보기</a></div>
-        ${todayBody}
-        <form class="quick-add" data-form="quick-todo" data-date="${h.today}">
-          <input type="text" name="title" placeholder="오늘 할 일을 입력하고 Enter" autocomplete="off">
-        </form>
-      </section>
-      <section class="card area-projects">
-        <div class="card-head"><h3>진행 중인 프로젝트</h3><a class="link" href="#/projects">전체 보기</a></div>
-        ${h.projects.length ? `<div class="project-list">${h.projects.map((p) => projectCard(p)).join('')}</div>` : empty('진행 중인 프로젝트가 없어요.', '첫 프로젝트 추가', 'new-project')}
-      </section>
-      <div class="area-side">
-        <section class="card">${miniCalendar(ym, marks)}</section>
-        <section class="card">
-          <div class="card-head"><h3>다가오는 일정</h3><a class="link" href="#/calendar">캘린더</a></div>
-          ${h.upcoming.length ? `<ul class="event-list">${h.upcoming.map(eventItem).join('')}</ul>` : empty('등록된 일정이 없어요.', '첫 일정 추가', 'new-event')}
-        </section>
-      </div>
-    </div>
-  </section>`;
-};
+// 홈 화면은 home.js 에서 정의한다
 
 views.projects = async () => {
   const list = await api('GET', '/api/projects');
@@ -204,10 +135,10 @@ views.project = async ({ id }) => {
   return `
   <div class="detail-head">
     <div><h1>${esc(p.name)}</h1>
-      <div class="sub"><span class="tag ${p.status === 'active' ? 'lime' : ''}">${STATUS_KO[p.status]}</span>
+      <div class="sub"><span class="tag ${p.status === 'active' ? 'accent' : ''}">${STATUS_KO[p.status]}</span>
         ${p.due_date ? `<span>마감 ${esc(D.long(p.due_date))}</span>` : '<span>마감일 없음</span>'}</div></div>
     <div class="head-actions"><button class="btn" data-action="edit-project" data-id="${p.id}">수정</button>
-      <button class="btn ghost-lime" data-action="open-ai">✦ AI에게 다음 작업 묻기</button></div>
+      <button class="btn ghost-accent" data-action="open-ai">✦ AI에게 다음 작업 묻기</button></div>
   </div>
   <div class="detail-grid">
     <div>
@@ -424,14 +355,23 @@ async function render() {
     // 입력 중이던 빠른 추가 칸 내용 보존
     const draft = view.querySelector('form[data-form=quick-todo] input[name=title]');
     const draftVal = draft && document.activeElement === draft ? draft.value : null;
+    // 같은 화면을 다시 그릴 때 스크롤 위치 보존 (data-keep-scroll 이 붙은 영역)
+    const sameView = view.dataset.route === r.name;
+    const scrolls = {};
+    if (sameView) view.querySelectorAll('[data-keep-scroll]').forEach((n) => { scrolls[n.dataset.keepScroll] = n.scrollTop; });
     view.innerHTML = html;
+    view.dataset.route = r.name;
+    view.querySelectorAll('[data-keep-scroll]').forEach((n) => { if (n.dataset.keepScroll in scrolls) n.scrollTop = scrolls[n.dataset.keepScroll]; });
     if (draftVal !== null) { const n = view.querySelector('form[data-form=quick-todo] input[name=title]'); if (n) { n.value = draftVal; n.focus(); } }
     if (r.name === 'chat') { chat.mount($('#page-chat'), 'page'); renderConvList(); }
+    if (typeof afterRender[r.name] === 'function') afterRender[r.name](sameView);
   } catch (e) {
     if (seq !== renderSeq) return;
     $('#view').innerHTML = `<div class="empty">불러오지 못했어요: ${esc(e.message)}<button class="btn small" data-action="reload">다시 시도</button></div>`;
   }
 }
+// 화면별 후처리 (home.js 등에서 등록)
+const afterRender = {};
 // 데이터가 바뀐 뒤 현재 화면을 새로 그린다
 const refresh = () => render();
 
@@ -494,8 +434,8 @@ async function todoModal({ todo, date, projectId } = {}) {
   todo ? async () => { await api('DELETE', `/api/todos/${todo.id}`); toast('삭제했어요'); } : null);
 }
 
-async function eventModal({ event, date, projectId } = {}) {
-  const e = event || { title: '', date: date || today(), start_time: '', end_time: '', project_id: projectId || '', memo: '' };
+async function eventModal({ event, date, projectId, start, end } = {}) {
+  const e = event || { title: '', date: date || today(), start_time: start || '', end_time: end || '', project_id: projectId || '', memo: '' };
   openModal(`<h3>${event ? '일정 수정' : '일정 추가'}</h3>
     <label class="field">제목<input type="text" name="title" value="${esc(e.title)}" required maxlength="300"></label>
     <label class="field">날짜<input type="date" name="date" value="${esc(e.date)}" required></label>
@@ -630,7 +570,7 @@ const chat = {
     let actions;
     if (p.status === 'applied') {
       const link = p.kind === 'event' ? `#/calendar?d=${v.date}` : v.due_date ? `#/calendar?d=${v.due_date}` : '#/todos?f=upcoming';
-      actions = `<span class="tag lime">✓ 등록됨</span><a class="btn small" href="${link}">${p.kind === 'event' ? '캘린더에서 보기' : '확인하기'}</a>`;
+      actions = `<span class="tag accent">✓ 등록됨</span><a class="btn small" href="${link}">${p.kind === 'event' ? '캘린더에서 보기' : '확인하기'}</a>`;
     } else if (p.status === 'dismissed') {
       actions = '<span class="tag">취소됨</span>';
     } else {
@@ -813,7 +753,6 @@ document.addEventListener('click', async (e) => {
     case 'goto-date': location.hash = `#/calendar?d=${date}`; break;
     case 'select-date': location.hash = `#/calendar?d=${date}`; break;
     case 'cal-month': location.hash = `#/calendar?m=${ym}&d=${currentRoute.query.get('d') || today()}`; break;
-    case 'mini-month': homeMiniMonth = ym; refresh(); break;
     case 'open-ai': openDrawer(); break;
     case 'close-ai': closeDrawer(); break;
     case 'chat-new':
@@ -888,6 +827,62 @@ document.addEventListener('submit', async (e) => {
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && $('#drawer').classList.contains('open') && !$('#modal-root').children.length) closeDrawer();
 });
+
+// ===================== 검색 (Ctrl+K) / 단축키 =====================
+function openSearch() {
+  const root = $('#modal-root');
+  root.innerHTML = `<div class="modal-backdrop search-backdrop"><div class="modal search-modal">
+    <input type="text" id="search-input" placeholder="할 일, 일정, 프로젝트 검색" autocomplete="off">
+    <div id="search-results" class="search-results"><div class="dim">검색어를 입력하세요.</div></div></div></div>`;
+  const close = () => { root.innerHTML = ''; document.removeEventListener('keydown', onKey); };
+  const onKey = (e) => {
+    if (e.key === 'Escape') close();
+    if (e.key === 'Enter') { const first = $('#search-results [data-go]'); if (first) first.click(); }
+  };
+  document.addEventListener('keydown', onKey);
+  $('.modal-backdrop', root).addEventListener('mousedown', (e) => { if (e.target.classList.contains('modal-backdrop')) close(); });
+  const input = $('#search-input');
+  let timer;
+  let seq = 0;
+  input.addEventListener('input', () => {
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      const q = input.value.trim();
+      const my = ++seq;
+      const out = $('#search-results');
+      if (!q) { out.innerHTML = '<div class="dim">검색어를 입력하세요.</div>'; return; }
+      const r = await api('GET', `/api/search?q=${encodeURIComponent(q)}`);
+      if (my !== seq || !$('#search-results')) return;
+      remember(cache.todos, r.todos);
+      remember(cache.events, r.events);
+      const group = (label, rows, fn) => rows.length ? `<div class="search-group">${label}</div>${rows.map(fn).join('')}` : '';
+      out.innerHTML = (group('할 일', r.todos, (t) => `<button class="search-item" data-go="todo" data-id="${t.id}"><span class="${t.done ? 'dim' : ''}">${t.done ? '✓ ' : ''}${esc(t.title)}</span><span class="dim">${t.due_date ? esc(D.short(t.due_date)) : ''}${t.project_name ? ' · ' + esc(t.project_name) : ''}</span></button>`)
+        + group('일정', r.events, (ev) => `<button class="search-item" data-go="event" data-date="${ev.date}"><span>${esc(ev.title)}</span><span class="dim">${esc(D.short(ev.date))} ${esc(ev.start_time || '종일')}</span></button>`)
+        + group('프로젝트', r.projects, (p) => `<button class="search-item" data-go="project" data-id="${p.id}"><span>${esc(p.name)}</span><span class="dim">${STATUS_KO[p.status]}</span></button>`))
+        || '<div class="dim">결과가 없어요.</div>';
+    }, 150);
+  });
+  $('#search-results').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-go]');
+    if (!b) return;
+    close();
+    if (b.dataset.go === 'todo') todoModal({ todo: cache.todos.get(Number(b.dataset.id)) });
+    else if (b.dataset.go === 'event') location.hash = `#/calendar?d=${b.dataset.date}`;
+    else location.hash = `#/projects/${b.dataset.id}`;
+  });
+  input.focus();
+}
+
+document.addEventListener('keydown', (e) => {
+  const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement && document.activeElement.tagName);
+  const modalOpen = $('#modal-root').children.length > 0;
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); if (!modalOpen) openSearch(); return; }
+  if (!typing && !modalOpen && !e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'n') {
+    e.preventDefault();
+    todoModal({ date: currentRoute.name === 'home' ? today() : undefined, projectId: currentProject && currentProject.id });
+  }
+});
+document.addEventListener('click', (e) => { if (e.target.closest('[data-action=open-search]')) openSearch(); });
 
 // ===================== 시작 =====================
 (async () => {

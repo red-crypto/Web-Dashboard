@@ -90,6 +90,35 @@ function addColumn(table, column, ddl) {
 }
 // 메시지를 보낼 때 고른 참고 범위 (today | all | project:<id>). 범위가 바뀌면 이전 대화를 GPT에 보내지 않기 위해 사용
 addColumn('messages', 'scope_key', 'scope_key TEXT');
+// 일정 = 홈 타임라인의 "시간 블록". 끝냈는지 체크한다
+addColumn('events', 'done', 'done INTEGER NOT NULL DEFAULT 0');
+
+db.exec(`
+  -- 시간 기록 (타이머 또는 직접 입력). ended_at 이 NULL 이면 지금 돌아가는 타이머
+  CREATE TABLE IF NOT EXISTS time_logs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id   INTEGER REFERENCES events(id) ON DELETE SET NULL,
+    title      TEXT NOT NULL,
+    date       TEXT NOT NULL,                -- 기록한 날 (YYYY-MM-DD, 앱 시간대)
+    started_at TEXT,                         -- ISO 시각 (타이머일 때)
+    ended_at   TEXT,
+    minutes    INTEGER,                      -- 끝난 기록의 분
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_logs_date ON time_logs(date);
+
+  -- 습관과 날짜별 체크
+  CREATE TABLE IF NOT EXISTS habits (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    title      TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS habit_checks (
+    habit_id INTEGER NOT NULL REFERENCES habits(id) ON DELETE CASCADE,
+    date     TEXT NOT NULL,
+    PRIMARY KEY (habit_id, date)
+  );
+`);
 
 function tx(fn) {
   db.exec('BEGIN IMMEDIATE');
@@ -268,8 +297,10 @@ function eventFields(b, creating) {
     end_time: optTime(b.end_time, '종료 시간'),
     project_id: optProject(b.project_id),
     memo: str(b.memo, '메모', { max: 2000 }),
+    done: b.done === undefined ? undefined : (b.done ? 1 : 0),
   };
   if (f.title === '') fail('일정 제목을 입력하세요.');
+  if (f.start_time && f.end_time && f.end_time <= f.start_time) fail('종료 시간은 시작 시간보다 늦어야 합니다.');
   if (creating && !f.date) fail('날짜를 입력하세요.');
   if (f.date === null) fail('날짜를 입력하세요.');
   return f;
@@ -404,6 +435,7 @@ function setSetting(key, value) {
 }
 
 module.exports = {
+  run, tx, str, fail,
   historyForScope, lastScopeKey, getSetting, setSetting,
   db, DB_PATH, ValidationError,
   listProjects, getProject, createProject, updateProject, deleteProject,
