@@ -92,6 +92,9 @@ function addColumn(table, column, ddl) {
 addColumn('messages', 'scope_key', 'scope_key TEXT');
 // 일정 = 홈 타임라인의 "시간 블록". 끝냈는지 체크한다
 addColumn('events', 'done', 'done INTEGER NOT NULL DEFAULT 0');
+// 간트 차트용 시작일 (YYYY-MM-DD). 할 일은 시작일~마감일 막대로, 프로젝트는 시작일~마감일이 차트 범위가 된다
+addColumn('todos', 'start_date', 'start_date TEXT');
+addColumn('projects', 'start_date', 'start_date TEXT');
 
 db.exec(`
   -- 시간 기록 (타이머 또는 직접 입력). ended_at 이 NULL 이면 지금 돌아가는 타이머
@@ -168,6 +171,12 @@ function optProject(v) {
   if (!Number.isInteger(id) || !get('SELECT id FROM projects WHERE id = ?', id)) fail('프로젝트를 찾을 수 없습니다.');
   return id;
 }
+// 시작일 <= 마감일 확인 (수정 시에는 바꾸지 않은 쪽은 기존 값을 사용)
+function checkRange(f, old = {}) {
+  const s = f.start_date !== undefined ? f.start_date : old.start_date;
+  const d = f.due_date !== undefined ? f.due_date : old.due_date;
+  if (s && d && s > d) fail('시작일은 마감일보다 늦을 수 없습니다.');
+}
 function buildUpdate(table, id, fields) {
   const keys = Object.keys(fields).filter((k) => fields[k] !== undefined);
   if (!keys.length) return;
@@ -178,7 +187,12 @@ function buildUpdate(table, id, fields) {
 const PROJECT_STATS = `
   SELECT p.*,
     (SELECT COUNT(*) FROM todos t WHERE t.project_id = p.id) AS total,
-    (SELECT COUNT(*) FROM todos t WHERE t.project_id = p.id AND t.done = 1) AS completed
+    (SELECT COUNT(*) FROM todos t WHERE t.project_id = p.id AND t.done = 1) AS completed,
+    -- 전체 프로젝트 간트 차트용: 할 일·일정 날짜의 처음과 끝
+    (SELECT MIN(d) FROM (SELECT COALESCE(t.start_date, t.due_date) AS d FROM todos t WHERE t.project_id = p.id
+                         UNION ALL SELECT e.date FROM events e WHERE e.project_id = p.id)) AS first_date,
+    (SELECT MAX(d) FROM (SELECT t.due_date AS d FROM todos t WHERE t.project_id = p.id
+                         UNION ALL SELECT e.date FROM events e WHERE e.project_id = p.id)) AS last_date
   FROM projects p`;
 
 function nextTodo(projectId) {
@@ -200,6 +214,8 @@ function getProject(id) {
     ...withNext(p),
     todos: all(`SELECT * FROM todos WHERE project_id = ? ORDER BY done, due_date IS NULL, due_date, id`, id),
     events: all(`SELECT * FROM events WHERE project_id = ? AND date >= ? ORDER BY date, start_time IS NOT NULL, start_time`, id, time.today()),
+    // 간트 차트용: 지난 일정까지 전부
+    all_events: all(`SELECT * FROM events WHERE project_id = ? ORDER BY date, start_time IS NOT NULL, start_time`, id),
   };
 }
 const STATUSES = ['active', 'paused', 'done'];
@@ -207,6 +223,7 @@ function projectFields(b, creating) {
   const f = {
     name: str(b.name, '프로젝트명', { required: creating, max: 120 }),
     goal: str(b.goal, '목표', { max: 2000 }),
+    start_date: optDate(b.start_date, '시작일'),
     due_date: optDate(b.due_date, '마감일'),
     status: b.status,
   };
@@ -216,13 +233,17 @@ function projectFields(b, creating) {
 }
 function createProject(b) {
   const f = projectFields(b, true);
-  const r = run('INSERT INTO projects (name, goal, due_date, status) VALUES (?, ?, ?, ?)',
-    f.name, f.goal ?? '', f.due_date ?? null, f.status ?? 'active');
+  checkRange(f);
+  const r = run('INSERT INTO projects (name, goal, start_date, due_date, status) VALUES (?, ?, ?, ?, ?)',
+    f.name, f.goal ?? '', f.start_date ?? null, f.due_date ?? null, f.status ?? 'active');
   return getProject(Number(r.lastInsertRowid));
 }
 function updateProject(id, b) {
-  if (!get('SELECT id FROM projects WHERE id = ?', id)) return null;
-  buildUpdate('projects', id, projectFields(b, false));
+  const old = get('SELECT start_date, due_date FROM projects WHERE id = ?', id);
+  if (!old) return null;
+  const f = projectFields(b, false);
+  checkRange(f, old);
+  buildUpdate('projects', id, f);
   return getProject(id);
 }
 function deleteProject(id) { return run('DELETE FROM projects WHERE id = ?', id).changes > 0; }
@@ -256,6 +277,7 @@ function todoFields(b, creating) {
   const f = {
     title: str(b.title, '할 일', { required: creating, max: 300 }),
     project_id: optProject(b.project_id),
+    start_date: optDate(b.start_date, '시작일'),
     due_date: optDate(b.due_date, '마감일'),
     memo: str(b.memo, '메모', { max: 2000 }),
   };
@@ -267,14 +289,18 @@ function todoFields(b, creating) {
   return f;
 }
 function insertTodo(f) {
-  const r = run('INSERT INTO todos (title, project_id, due_date, memo) VALUES (?, ?, ?, ?)',
-    f.title, f.project_id ?? null, f.due_date ?? null, f.memo ?? '');
+  checkRange(f);
+  const r = run('INSERT INTO todos (title, project_id, start_date, due_date, memo) VALUES (?, ?, ?, ?, ?)',
+    f.title, f.project_id ?? null, f.start_date ?? null, f.due_date ?? null, f.memo ?? '');
   return Number(r.lastInsertRowid);
 }
 function createTodo(b) { return getTodo(insertTodo(todoFields(b, true))); }
 function updateTodo(id, b) {
-  if (!getTodo(id)) return null;
-  buildUpdate('todos', id, todoFields(b, false));
+  const old = getTodo(id);
+  if (!old) return null;
+  const f = todoFields(b, false);
+  checkRange(f, old);
+  buildUpdate('todos', id, f);
   return getTodo(id);
 }
 function deleteTodo(id) { return run('DELETE FROM todos WHERE id = ?', id).changes > 0; }

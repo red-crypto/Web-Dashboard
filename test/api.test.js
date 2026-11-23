@@ -244,3 +244,24 @@ test('Responses API 로 도구 호출 (추론 모델 대응), 미지원 서버�
   assert.equal(r.data.messages.at(-1).proposals[0].kind, 'event');
   await api('PUT', '/api/settings/model', { model: '' });
 });
+
+test('간트 차트: 시작일 저장, 시작일 > 마감일 거부, 프로젝트 기간과 전체 일정 반환', async () => {
+  const today = seoulToday();
+  const p = (await api('POST', '/api/projects', { name: '간트', start_date: today, due_date: addDays(today, 60) })).data;
+  assert.equal(p.start_date, today);
+  const t = await api('POST', '/api/todos', { title: '설계', project_id: p.id, start_date: addDays(today, 1), due_date: addDays(today, 10) });
+  assert.equal(t.status, 200);
+  assert.equal(t.data.start_date, addDays(today, 1));
+  const bad = await api('POST', '/api/todos', { title: '역순', project_id: p.id, start_date: addDays(today, 5), due_date: addDays(today, 2) });
+  assert.equal(bad.status, 400);
+  // 마감일만 바꿔서 기존 시작일보다 앞서면 거부
+  assert.equal((await api('PUT', `/api/todos/${t.data.id}`, { due_date: today })).status, 400);
+  assert.equal((await api('PUT', `/api/projects/${p.id}`, { start_date: addDays(today, 61) })).status, 400);
+  await api('POST', '/api/events', { title: '지난 회의', date: addDays(today, -3), project_id: p.id });
+  const d = (await api('GET', `/api/projects/${p.id}`)).data;
+  assert.equal(d.events.length, 0);
+  assert.equal(d.all_events.length, 1);
+  const row = (await api('GET', '/api/projects')).data.find((x) => x.id === p.id);
+  assert.equal(row.first_date, addDays(today, -3));
+  assert.equal(row.last_date, addDays(today, 10));
+});

@@ -16,6 +16,7 @@ class AiError extends Error {}
 // 고른 범위의 데이터만 GPT에 보낸다. (예: '현재 프로젝트'를 고르면 다른 프로젝트 정보는 보내지 않음)
 function fmtTodo(t) {
   const bits = [`#${t.id} ${t.title}`];
+  if (t.start_date) bits.push(`시작 ${t.start_date}`);
   if (t.due_date) bits.push(`마감 ${t.due_date}`); else bits.push('마감 없음');
   if (t.project_name) bits.push(`프로젝트: ${t.project_name} (id ${t.project_id})`);
   if (t.done) bits.push('완료');
@@ -47,7 +48,7 @@ function buildContext(scope) {
     const p = scope.project;
     lines.push(`\n[현재 프로젝트] ${p.name} (id ${p.id})`);
     lines.push(`목표: ${p.goal || '(미입력)'}`);
-    lines.push(`마감: ${p.due_date || '(없음)'}, 진행: ${p.completed}/${p.total}`);
+    lines.push(`기간: ${p.start_date || '(시작일 없음)'} ~ ${p.due_date || '(마감 없음)'}, 진행: ${p.completed}/${p.total}`);
     lines.push('\n[미완료 할 일]');
     lines.push(list(p.todos.filter((t) => !t.done), fmtTodo));
     lines.push('\n[완료한 할 일 (최근)]');

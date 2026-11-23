@@ -118,10 +118,18 @@ views.projects = async () => {
   const list = await api('GET', '/api/projects');
   return `
   <div class="page-head"><h1>프로젝트</h1><button class="btn primary" data-action="new-project">+ 프로젝트</button></div>
+  ${gantt.projects(list)}
   ${list.length ? `<div class="project-grid">${list.map((p) => projectCard(p, { showGoal: true })).join('')}</div>` : empty('아직 프로젝트가 없어요.', '첫 프로젝트 추가', 'new-project')}`;
 };
 
-views.project = async ({ id }) => {
+// 프로젝트 화면 보기 방식: gantt(전체 흐름) | list(기존 목록). 마지막 선택을 기억한다
+function projectViewMode(query) {
+  const v = query && query.get('v');
+  if (v === 'gantt' || v === 'list') { try { localStorage.setItem('project-view', v); } catch { /* 무시 */ } return v; }
+  try { return localStorage.getItem('project-view') === 'list' ? 'list' : 'gantt'; } catch { return 'gantt'; }
+}
+
+views.project = async ({ id, query }) => {
   let p;
   try { p = await api('GET', `/api/projects/${id}`); } catch (e) {
     if (e.status === 404) return `<div class="empty">프로젝트를 찾을 수 없어요. <a class="btn small" href="#/projects">목록으로</a></div>`;
@@ -132,14 +140,33 @@ views.project = async ({ id }) => {
   const open = p.todos.filter((t) => !t.done);
   const done = p.todos.filter((t) => t.done);
   remember(cache.events, p.events);
-  return `
+  const mode = projectViewMode(query);
+  const head = `
   <div class="detail-head">
     <div><h1>${esc(p.name)}</h1>
       <div class="sub"><span class="tag ${p.status === 'active' ? 'accent' : ''}">${STATUS_KO[p.status]}</span>
-        ${p.due_date ? `<span>마감 ${esc(D.long(p.due_date))}</span>` : '<span>마감일 없음</span>'}</div></div>
-    <div class="head-actions"><button class="btn" data-action="edit-project" data-id="${p.id}">수정</button>
+        ${p.start_date ? `<span>시작 ${esc(D.long(p.start_date))}</span><span class="dim">→</span>` : ''}
+        ${p.due_date ? `<span>마감 ${esc(D.long(p.due_date))}</span>` : '<span>마감일 없음</span>'}
+        ${p.due_date && p.status !== 'done' ? `<span class="tag ${p.due_date < today() ? 'danger' : ''}">${p.due_date < today() ? `${gantt.days(p.due_date, today())}일 지남` : `D-${gantt.days(today(), p.due_date)}`}</span>` : ''}</div></div>
+    <div class="head-actions">
+      <div class="seg view-seg"><a class="${mode === 'gantt' ? 'active' : ''}" href="#/projects/${p.id}?v=gantt">간트 차트</a><a class="${mode === 'list' ? 'active' : ''}" href="#/projects/${p.id}?v=list">목록</a></div>
+      <button class="btn" data-action="edit-project" data-id="${p.id}">수정</button>
       <button class="btn ghost-accent" data-action="open-ai">✦ AI에게 다음 작업 묻기</button></div>
-  </div>
+  </div>`;
+  if (mode === 'gantt') {
+    return `${head}
+    ${gantt.project(p)}
+    <div class="gantt-side">
+      <section class="card"><div class="card-head"><h3>진행률</h3><span class="muted">${p.completed} / ${p.total}</span></div>
+        <div class="big-pct">${pct}%</div><div class="progress"><span style="width:${pct}%"></span></div></section>
+      <section class="card"><div class="card-head"><h3>목표</h3></div>
+        <div class="goal-text">${p.goal ? esc(p.goal) : '<span class="dim">목표가 아직 없어요. [수정]에서 입력하세요.</span>'}</div></section>
+      <section class="card"><div class="card-head"><h3>다음에 할 작업</h3></div>
+        ${p.next ? `<div class="goal-text"><b>${esc(p.next.title)}</b></div><div class="muted" style="font-size:13px;margin:4px 0 12px">${p.next.due_date ? `마감 ${esc(D.rel(p.next.due_date))}` : '마감일 없음'}</div>
+          <button class="btn small" data-action="toggle-todo" data-id="${p.next.id}">✓ 완료로 표시</button>` : '<div class="dim">남은 할 일이 없어요.</div>'}</section>
+    </div>`;
+  }
+  return `${head}
   <div class="detail-grid">
     <div>
       ${p.next ? `<div class="next-card"><div class="label">다음에 할 작업</div><div class="title">${esc(p.next.title)}</div>
@@ -420,14 +447,15 @@ function confirmDelete(form) {
 }
 
 async function todoModal({ todo, date, projectId } = {}) {
-  const t = todo || { title: '', due_date: date || '', project_id: projectId || '', memo: '' };
+  const t = todo || { title: '', start_date: '', due_date: date || '', project_id: projectId || '', memo: '' };
   openModal(`<h3>${todo ? '할 일 수정' : '할 일 추가'}</h3>
     <label class="field">할 일<input type="text" name="title" value="${esc(t.title)}" required maxlength="300"></label>
-    <div class="row"><label class="field">마감일<input type="date" name="due_date" value="${esc(t.due_date || '')}"></label>
-      <label class="field">프로젝트<select name="project_id">${await projectOptions(t.project_id)}</select></label></div>
+    <div class="row"><label class="field">시작일<input type="date" name="start_date" value="${esc(t.start_date || '')}"></label>
+      <label class="field">마감일<input type="date" name="due_date" value="${esc(t.due_date || '')}"></label></div>
+    <label class="field">프로젝트<select name="project_id">${await projectOptions(t.project_id)}</select></label>
     <label class="field">메모<textarea name="memo" maxlength="2000">${esc(t.memo || '')}</textarea></label>`,
   async (v) => {
-    const body = { title: v.title, due_date: v.due_date || null, project_id: v.project_id || null, memo: v.memo };
+    const body = { title: v.title, start_date: v.start_date || null, due_date: v.due_date || null, project_id: v.project_id || null, memo: v.memo };
     if (todo) await api('PUT', `/api/todos/${todo.id}`, body); else await api('POST', '/api/todos', body);
     toast(todo ? '수정했어요' : '할 일을 추가했어요');
   },
@@ -452,14 +480,15 @@ async function eventModal({ event, date, projectId, start, end } = {}) {
 }
 
 function projectModal(project) {
-  const p = project || { name: '', goal: '', due_date: '', status: 'active' };
+  const p = project || { name: '', goal: '', start_date: today(), due_date: '', status: 'active' };
   openModal(`<h3>${project ? '프로젝트 수정' : '프로젝트 추가'}</h3>
     <label class="field">프로젝트명<input type="text" name="name" value="${esc(p.name)}" required maxlength="120"></label>
     <label class="field">목표<textarea name="goal" maxlength="2000" placeholder="이 프로젝트로 이루려는 것 (AI가 다음 작업을 제안할 때 참고합니다)">${esc(p.goal)}</textarea></label>
-    <div class="row"><label class="field">마감일<input type="date" name="due_date" value="${esc(p.due_date || '')}"></label>
-      <label class="field">상태<select name="status">${Object.entries(STATUS_KO).map(([k, l]) => `<option value="${k}" ${p.status === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label></div>`,
+    <div class="row"><label class="field">시작일<input type="date" name="start_date" value="${esc(p.start_date || '')}"></label>
+      <label class="field">마감일<input type="date" name="due_date" value="${esc(p.due_date || '')}"></label></div>
+    <div class="row"><label class="field">상태<select name="status">${Object.entries(STATUS_KO).map(([k, l]) => `<option value="${k}" ${p.status === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label></div>`,
   async (v) => {
-    const body = { name: v.name, goal: v.goal, due_date: v.due_date || null, status: v.status };
+    const body = { name: v.name, goal: v.goal, start_date: v.start_date || null, due_date: v.due_date || null, status: v.status };
     if (project) await api('PUT', `/api/projects/${project.id}`, body);
     else { const created = await api('POST', '/api/projects', body); location.hash = `#/projects/${created.id}`; }
     projectOptionsCache = null; // 채팅의 프로젝트 목록도 새로 받도록
@@ -810,17 +839,23 @@ document.addEventListener('submit', async (e) => {
   if (!title || f.dataset.busy) return;
   f.dataset.busy = '1';
   const dateInput = f.querySelector('input[name=due_date]');
+  const startInput = f.querySelector('input[name=start_date]');
   try {
     await api('POST', '/api/todos', {
       title,
+      start_date: startInput ? startInput.value || null : null,
       due_date: dateInput ? dateInput.value || null : f.dataset.date || null,
       project_id: f.dataset.project || null,
     });
     input.value = '';
+    // 다음 작업을 이어서 넣기 쉽도록: 시작일 칸에 방금 넣은 마감일 다음 날을 미리 채운다
+    const keep = startInput && dateInput && dateInput.value ? D.add(dateInput.value, 1) : null;
     toast('할 일을 추가했어요');
     await refresh();
     const again = $('#view form[data-form=quick-todo] input[name=title]');
     if (again) again.focus();
+    const nextStart = keep && $('#view form[data-form=quick-todo] input[name=start_date]');
+    if (nextStart) nextStart.value = keep;
   } catch (err) { toast(err.message); } finally { delete f.dataset.busy; }
 });
 
