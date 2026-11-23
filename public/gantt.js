@@ -106,7 +106,7 @@ const gantt = {
     const undated = todos.filter((t) => !t.start_date && !t.due_date);
     const created = p.created_at ? p.created_at.slice(0, 10) : t0;
     const projStart = p.start_date || this.min(created, ...dated.map((t) => t.start_date || t.due_date), ...events.map((e) => e.date));
-    const projEnd = p.due_date || this.max(t0, ...dated.map((t) => t.due_date || t.start_date), ...events.map((e) => e.date));
+    const projEnd = p.due_date || this.max(t0, projStart, ...dated.map((t) => t.due_date || t.start_date), ...events.map((e) => e.date));
     // 차트 범위 = 프로젝트 기간 + 범위를 벗어난 항목 + 오늘, 앞뒤 여유
     const lo = this.min(projStart, t0, ...dated.map((t) => t.start_date || t.due_date), ...events.map((e) => e.date));
     const hi = this.max(projEnd, t0, ...dated.map((t) => t.due_date || t.start_date), ...events.map((e) => e.date));
